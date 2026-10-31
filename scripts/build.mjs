@@ -7,9 +7,10 @@ const read = name => readFile(path.join(root, 'public', name), 'utf8');
 const [template, css, favicon] = await Promise.all(['index.html', 'style.css', 'favicon.svg'].map(read));
 // The downloadable version makes no font/asset requests and needs no server.
 const styles = css.replace(/^@import\s+url\([^\n]+\);\s*/m, '');
-const modules = await Promise.all(['checker.js','video-utils.js','ocr-engine.js','video.js','app.js'].map(read));
+const modules = await Promise.all(['checker.js','video-utils.js','media-loader.js','ocr-engine.js','video.js','app.js'].map(read));
 const logic = modules.map(source => source.replace(/^import [^\n]*\n/gm,'').replace(/^export /gm,'')).join('\n');
 const assets = {};
+assets.demo = (await readFile(path.join(root,'public/demo.mp4'))).toString('base64');
 for (const [key,name] of Object.entries({library:'tesseract.min.js',worker:'worker.min.js',core:'core.wasm.js',jpn:'jpn.traineddata.gz',eng:'eng.traineddata.gz'})) {
   assets[key] = (await readFile(path.join(root,'public/vendor/ocr',name))).toString('base64');
 }

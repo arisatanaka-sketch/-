@@ -1,17 +1,18 @@
 import { checkText, applyFindings } from './checker.js';
 import { createLocalOcrWorker } from './ocr-engine.js';
 import { formatVideoTime, buildSampleTimes, videoCropRect, normalizedCaption, captionsToSrt, videoReportCsv } from './video-utils.js';
+import { loadBrowserVideo } from './media-loader.js';
 
 export function initVideoReview({ getDictionary, onTextExport, notify }) {
   const v$ = id => document.getElementById(id);
   const video = v$('video-player');
-  const review = { file: null, url: null, ready: false, busy: false, rows: [], filter: 'all', worker: null, abort: null, loadId: 0 };
+  const review = { file: null, url: null, ready: false, busy: false, rows: [], filter: 'all', worker: null, abort: null, loadId: 0, loadAbort: null };
   const safe = value => String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const abortError = () => new DOMException('読み取りを停止しました。','AbortError');
   const message = (text, error = false) => {v$('video-message').textContent=text;v$('video-message').classList.toggle('error',error);};
   const crop = () => ({ x:Number(v$('video-crop-x').value),y:Number(v$('video-crop-y').value),w:Number(v$('video-crop-w').value),h:Number(v$('video-crop-h').value) });
   const findings = row => checkText(row.text, {custom:getDictionary(),ignored:row.ignored});
-  const fields = ['video-crop-preset','video-crop-x','video-crop-y','video-crop-w','video-crop-h','video-start','video-end','video-interval','video-file','video-change','video-choose'];
+  const fields = ['video-crop-preset','video-crop-x','video-crop-y','video-crop-w','video-crop-h','video-start','video-end','video-interval','video-file','video-change','video-choose','video-demo'];
   function updateButtons() {
     for (const id of fields) v$(id).disabled = review.busy;
     document.querySelectorAll('[data-caption-edit], [data-video-apply], [data-video-ignore]').forEach(el => el.disabled = review.busy);
@@ -89,28 +90,23 @@ export function initVideoReview({ getDictionary, onTextExport, notify }) {
     if (!file.type.startsWith('video/') && !/\.(mp4|webm|mov|m4v|ogv)$/i.test(file.name)) return message('動画ファイルを選択してください。MP4・WebMなどに対応しています。',true);
     if (review.rows.length && !window.confirm('確認中のテロップを消して、別の動画に切り替えますか？必要なレポートを先に保存してください。')) return;
     const loadId=++review.loadId;
+    review.loadAbort?.abort();review.loadAbort=new AbortController();
     review.ready=false;review.rows=[];review.file=file;
     video.pause();video.removeAttribute('src');video.load();
     if (review.url) URL.revokeObjectURL(review.url);
-    review.url=URL.createObjectURL(file);video.src=review.url;
+    review.url=URL.createObjectURL(file);
     video.hidden=false;v$('video-upload').hidden=true;v$('video-drop').classList.add('has-video');
     v$('video-file-name').textContent=file.name;v$('video-file-meta').textContent='動画を読み込み中…';
     v$('video-crop-overlay').hidden=true;updateButtons();renderReview();message('動画を読み込んでいます…');
     try {
-      await new Promise((resolve,reject)=>{
-        const cleanup=()=>{clearTimeout(timer);video.removeEventListener('loadeddata',ok);video.removeEventListener('error',fail);};
-        const ok=()=>{cleanup();resolve();};const fail=()=>{cleanup();reject(new Error('この動画を再生できません。MP4（H.264）やWebM形式に変換してお試しください。'));};
-        const timer=setTimeout(()=>{cleanup();reject(new Error('動画の読み込みに時間がかかっています。短い動画や別形式でお試しください。'));},20000);
-        video.addEventListener('loadeddata',ok,{once:true});video.addEventListener('error',fail,{once:true});
-        if(video.readyState>=2) ok();
-      });
+      await loadBrowserVideo(video,review.url,{signal:review.loadAbort.signal});
       if(loadId!==review.loadId)return;
       if (!Number.isFinite(video.duration)||video.duration<=0) throw new Error('動画の長さを取得できません。別形式で保存してお試しください。');
       review.ready=true;
       v$('video-start').value=0;v$('video-end').value=Number(video.duration.toFixed(3));
       v$('video-file-meta').textContent=`${formatVideoTime(video.duration,'.')} / ${video.videoWidth} × ${video.videoHeight}`;
       updateCrop();updateEstimate();updateButtons();message('動画を読み込みました。テロップの位置を指定し、「この画面を読む」または「テロップを読み取る」を押してください。');
-    } catch(e) {if(loadId!==review.loadId)return;review.ready=false;v$('video-file-meta').textContent='再生できません';v$('video-crop-overlay').hidden=true;message(e.message,true);updateButtons();}
+    } catch(e) {if(loadId!==review.loadId||e.name==='AbortError')return;review.ready=false;v$('video-file-meta').textContent='再生できません';v$('video-crop-overlay').hidden=true;message(e.message,true);updateButtons();}
   }
   async function scanVideo(manual) {
     if(!review.ready||review.busy)return;
@@ -161,6 +157,16 @@ export function initVideoReview({ getDictionary, onTextExport, notify }) {
     }finally{clearTimeout(initialTimeout);if(review.worker){await review.worker.terminate();review.worker=null;}review.busy=false;review.abort=null;updateButtons();}
   }
   for(const id of ['video-choose','video-change'])v$(id).addEventListener('click',()=>v$('video-file').click());
+  v$('video-demo').addEventListener('click',async()=>{
+    if(review.busy)return;
+    try {
+      const packed=document.getElementById('ocr-packed-assets');
+      let bytes;
+      if(packed){const data=JSON.parse(packed.textContent);bytes=Uint8Array.from(atob(data.demo),c=>c.charCodeAt(0));}
+      else {const response=await fetch(new URL('./demo.mp4',document.baseURI));if(!response.ok)throw new Error();bytes=await response.arrayBuffer();}
+      await loadVideo(new File([bytes],'sample-telop-H264.mp4',{type:'video/mp4'}));
+    }catch{message('サンプルを読み込めませんでした。ページを再読み込みしてお試しください。',true);}
+  });
   v$('video-file').addEventListener('change',event=>{loadVideo(event.target.files[0]);event.target.value='';});
   for(const type of ['dragenter','dragover'])v$('video-drop').addEventListener(type,event=>{event.preventDefault();if(!review.busy)v$('video-drop').classList.add('dragging');});
   for(const type of ['dragleave','drop'])v$('video-drop').addEventListener(type,event=>{event.preventDefault();v$('video-drop').classList.remove('dragging');if(type==='drop')loadVideo(event.dataTransfer.files[0]);});
@@ -200,6 +206,6 @@ export function initVideoReview({ getDictionary, onTextExport, notify }) {
     onTextExport(srt,`${review.file.name.replace(/\.[^.]+$/,'')}_ocr.srt`);
   });
   document.querySelector('[data-view="video"]').addEventListener('click',renderReview);
-  window.addEventListener('pagehide',()=>{review.abort?.abort();review.worker?.terminate();if(review.url)URL.revokeObjectURL(review.url);});
+  window.addEventListener('pagehide',()=>{review.loadAbort?.abort();review.abort?.abort();review.worker?.terminate();if(review.url)URL.revokeObjectURL(review.url);});
   updateButtons();
 }
