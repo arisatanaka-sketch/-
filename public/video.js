@@ -1,25 +1,26 @@
 import { checkText, applyFindings } from './checker.js';
 import { createLocalOcrWorker } from './ocr-engine.js';
-import { formatVideoTime, buildSampleTimes, videoCropRect, normalizedCaption, captionsToSrt, videoReportCsv } from './video-utils.js';
+import { formatVideoTime, buildSampleTimes, videoCropRect, normalizedCaption, captionsToSrt, videoReportCsv, assessCaption, normalizeOcrText } from './video-utils.js';
 import { loadBrowserVideo } from './media-loader.js';
 
 export function initVideoReview({ getDictionary, onTextExport, notify }) {
   const v$ = id => document.getElementById(id);
   const video = v$('video-player');
-  const review = { file: null, url: null, ready: false, busy: false, rows: [], filter: 'all', worker: null, abort: null, loadId: 0, loadAbort: null };
+  const review = { file: null, url: null, ready: false, busy: false, rows: [], filter: 'all', worker: null, abort: null, loadId: 0, loadAbort: null, selecting: false, selection: null };
   const safe = value => String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const abortError = () => new DOMException('読み取りを停止しました。','AbortError');
   const message = (text, error = false) => {v$('video-message').textContent=text;v$('video-message').classList.toggle('error',error);};
   const crop = () => ({ x:Number(v$('video-crop-x').value),y:Number(v$('video-crop-y').value),w:Number(v$('video-crop-w').value),h:Number(v$('video-crop-h').value) });
   const findings = row => checkText(row.text, {custom:getDictionary(),ignored:row.ignored});
-  const fields = ['video-crop-preset','video-crop-x','video-crop-y','video-crop-w','video-crop-h','video-start','video-end','video-interval','video-file','video-change','video-choose','video-demo'];
+  const fields = ['video-crop-preset','video-crop-x','video-crop-y','video-crop-w','video-crop-h','video-start','video-end','video-interval','video-file','video-change','video-choose','video-demo','video-ocr-language','video-ocr-layout','video-export-scope'];
   function updateButtons() {
     for (const id of fields) v$(id).disabled = review.busy;
-    document.querySelectorAll('[data-caption-edit], [data-video-apply], [data-video-ignore]').forEach(el => el.disabled = review.busy);
+    document.querySelectorAll('[data-caption-edit], [data-video-apply], [data-video-ignore], [data-video-confirm]').forEach(el => el.disabled = review.busy);
     v$('video-scan').disabled = v$('video-current').disabled = !review.ready || review.busy;
+    v$('video-select-region').disabled = !review.ready || review.busy;
     v$('video-stop').hidden = !review.busy;
     v$('video-report').disabled = v$('video-to-editor').disabled = !review.rows.length || review.busy;
-    video.controls = !review.busy;
+    video.controls = !review.busy && !review.selecting;
   }
   function samplePlan() {
     const start = Number(v$('video-start').value);
@@ -37,7 +38,29 @@ export function initVideoReview({ getDictionary, onTextExport, notify }) {
     const valid = Object.values(c).every(Number.isFinite) && c.x >= 0 && c.y >= 0 && c.w > 0 && c.h > 0 && c.x < 100 && c.y < 100 && c.x+c.w <= 100 && c.y+c.h <= 100;
     v$('video-crop-overlay').hidden = !review.ready || !valid;
     if (valid) Object.assign(v$('video-crop-overlay').style,{left:`${c.x}%`,top:`${c.y}%`,width:`${c.w}%`,height:`${c.h}%`});
+    updateCropPreview();
     return valid;
+  }
+  function updateCropPreview() {
+    v$('video-crop-preview').hidden=!review.ready;
+    if(!review.ready||review.busy||video.readyState<2)return;
+    const rect=videoCropRect(video.videoWidth,video.videoHeight,crop());
+    const canvas=v$('video-crop-canvas');
+    canvas.width=Math.min(640,rect.width);canvas.height=Math.max(1,Math.round(rect.height*canvas.width/rect.width));
+    canvas.getContext('2d').drawImage(video,rect.x,rect.y,rect.width,rect.height,0,0,canvas.width,canvas.height);
+  }
+  function setSelectionMode(active) {
+    review.selecting=active;review.selection=null;
+    v$('video-drop').classList.toggle('selecting',active);
+    v$('video-select-region').textContent=active?'範囲指定をやめる（Esc）':'テロップをマウスで囲む';
+    if(active){video.pause();message('動画の上で、テロップの文字だけをドラッグして囲んでください。人物・背景・ロゴを入れないほど読み取りやすくなります。');}
+    updateButtons();
+  }
+  function selectExportRows() {
+    const rows=v$('video-export-scope').value==='all'?review.rows:review.rows.filter(row=>row.confirmed);
+    if(rows.length)return rows;
+    notify('画像と文字を見比べ、各テロップの「確認済みにする」を押してください。未確認の結果も必要な場合は「未確認も含めてすべて」を選べます。');
+    return null;
   }
   function seekTo(time, signal) {
     return new Promise((resolve,reject) => {
@@ -77,11 +100,14 @@ export function initVideoReview({ getDictionary, onTextExport, notify }) {
     let issueCount=0;
     for (const row of review.rows) issueCount += findings(row).length;
     v$('video-captions-count').textContent=review.rows.length;
-    v$('video-review-summary').textContent=review.rows.length?`${review.rows.length}件のテロップ / 修正候補 ${issueCount}件 · 画像と見比べて確認してください。`:'読み取った文字を、元の画像と見比べて確認できます。';
-    const rows=review.rows.filter(row=>review.filter==='all'||(review.filter==='issues'?findings(row).length>0:row.confidence<70));
+    const confirmed=review.rows.filter(row=>row.confirmed).length;
+    const uncertain=review.rows.filter(row=>!row.confirmed&&assessCaption(row).needsReview).length;
+    v$('video-review-summary').textContent=review.rows.length?`${review.rows.length}件 / 画像と照合済み ${confirmed}件 / 読み取り要確認 ${uncertain}件 / 辞書の候補 ${issueCount}件`:'読み取った文字は未確認です。画像と照合してから確認済みにしてください。';
+    const rows=review.rows.filter(row=>review.filter==='all'||(review.filter==='issues'?findings(row).length>0:!row.confirmed&&assessCaption(row).needsReview));
     v$('video-captions').innerHTML=rows.length?rows.map(row=>{
-      const list=findings(row);
-      return `<article class="video-caption-card" data-caption="${row.id}"><div class="video-caption-image"><button data-video-jump="${row.id}" title="この時刻の動画を見る"><img src="${row.image}" alt="${formatVideoTime(row.time,'.')} のテロップ領域"><span>▶ ${formatVideoTime(row.time,'.')}</span></button><span class="video-ocr-score ${row.confidence<70?'low':''}">OCRスコア ${Math.round(row.confidence)}${row.confidence<70?' · 画像と要照合':''}</span></div><div class="video-caption-body"><label for="video-caption-text-${row.id}">読み取ったテロップ <span>OCRの読み間違いはここで修正</span></label><textarea id="video-caption-text-${row.id}" data-caption-edit="${row.id}" maxlength="4000" spellcheck="false" ${review.busy?'disabled':''}>${safe(row.text)}</textarea><div class="video-caption-issues">${list.length?list.map(f=>`<div class="video-caption-issue"><span><del>${safe(f.from)}</del><span> → </span><strong>${safe(f.to)}</strong></span><div><button data-video-ignore="${row.id}" data-issue-id="${safe(f.id)}">無視</button><button data-video-apply="${row.id}" data-issue-id="${safe(f.id)}">候補を適用</button></div><small>${safe(f.reason)}</small></div>`).join(''):'<p class="video-caption-clear">✓ 辞書に一致する修正候補はありません</p>'}</div></div></article>`;
+      const list=findings(row), quality=assessCaption(row);
+      const emptyState=row.confirmed?'画像と照合済み。辞書に一致する修正候補はありません。':quality.needsReview?'OCRの読み取りが不確かです。画像と照合し、読み間違いを直してください。':'辞書の候補はありませんが、画像との照合は未完了です。';
+      return `<article class="video-caption-card" data-caption="${row.id}"><div class="video-caption-image"><button data-video-jump="${row.id}" title="この時刻の動画を見る"><img src="${row.image}" alt="${formatVideoTime(row.time,'.')} のテロップ領域"><span>▶ ${formatVideoTime(row.time,'.')}</span></button><span class="video-ocr-score ${quality.needsReview&&!row.confirmed?'low':''}">${row.confirmed?'画像と照合済み':quality.needsReview?'読み取り要確認':'画像との照合は未完了'} · OCRスコア ${Math.round(row.confidence)}</span></div><div class="video-caption-body"><label for="video-caption-text-${row.id}">読み取ったテロップ <span>OCRの読み間違いはここで修正</span></label><textarea id="video-caption-text-${row.id}" data-caption-edit="${row.id}" maxlength="4000" spellcheck="false" ${review.busy?'disabled':''}>${safe(row.text)}</textarea><div class="video-caption-issues">${list.length?list.map(f=>`<div class="video-caption-issue"><span><del>${safe(f.from)}</del><span> → </span><strong>${safe(f.to)}</strong></span><div><button data-video-ignore="${row.id}" data-issue-id="${safe(f.id)}">無視</button><button data-video-apply="${row.id}" data-issue-id="${safe(f.id)}">候補を適用</button></div><small>${safe(f.reason)}</small></div>`).join(''):`<p class="video-caption-clear ${!row.confirmed?'unverified':''}">${emptyState}</p>`}</div><div class="video-confirm-row"><span>${row.confirmed?'元の画像と見比べた結果として書き出せます':'文字を見比べてから確認済みにしてください'}</span><button class="secondary-button" data-video-confirm="${row.id}" ${review.busy?'disabled':''}>${row.confirmed?'確認済み ✓（取り消す）':'画像と照合して確認済みにする'}</button></div></div></article>`;
     }).join(''):`<div class="video-empty-review"><svg><use href="#i-video"/></svg><h3>${review.rows.length?'この条件のテロップはありません':'映像と文字を、並べてチェック。'}</h3><p>${review.rows.length?'別の表示条件で確認してみましょう。':'読み取り後に、時刻・画像・修正候補がここに並びます。'}</p></div>`;
     updateButtons();
   }
@@ -91,7 +117,7 @@ export function initVideoReview({ getDictionary, onTextExport, notify }) {
     if (review.rows.length && !window.confirm('確認中のテロップを消して、別の動画に切り替えますか？必要なレポートを先に保存してください。')) return;
     const loadId=++review.loadId;
     review.loadAbort?.abort();review.loadAbort=new AbortController();
-    review.ready=false;review.rows=[];review.file=file;
+    setSelectionMode(false);review.ready=false;review.rows=[];review.file=file;v$('video-crop-preview').hidden=true;
     video.pause();video.removeAttribute('src');video.load();
     if (review.url) URL.revokeObjectURL(review.url);
     review.url=URL.createObjectURL(file);
@@ -110,6 +136,7 @@ export function initVideoReview({ getDictionary, onTextExport, notify }) {
   }
   async function scanVideo(manual) {
     if(!review.ready||review.busy)return;
+    setSelectionMode(false);
     if(!updateCrop()) return message('読み取り範囲を確認してください。左＋幅、上＋高さはそれぞれ100%以内にしてください。',true);
     let times,end;
     try {if(manual){times=[video.currentTime];end=Math.min(video.duration,video.currentTime+Number(v$('video-interval').value));}else({times,end}=samplePlan());}
@@ -122,7 +149,7 @@ export function initVideoReview({ getDictionary, onTextExport, notify }) {
     let processed=0,last=null;
     let initialTimeout;
     try {
-      const workerPromise=createLocalOcrWorker(event=>{if(signal.aborted)return;if(processed===0&&event.status!=='recognizing text')v$('video-progress-label').textContent='日本語OCRを準備しています…';});
+      const workerPromise=createLocalOcrWorker(event=>{if(signal.aborted)return;if(processed===0&&event.status!=='recognizing text')v$('video-progress-label').textContent='日本語OCRを準備しています…';},{languages:v$('video-ocr-language').value,pageMode:v$('video-ocr-layout').value});
       workerPromise.then(worker=>{if(signal.aborted)worker.terminate();},()=>{});
       initialTimeout=setTimeout(()=>review.abort.abort(),90000);
       review.worker=await abortable(workerPromise,signal);clearTimeout(initialTimeout);
@@ -133,13 +160,14 @@ export function initVideoReview({ getDictionary, onTextExport, notify }) {
         v$('video-progress-label').textContent=`${i+1} / ${times.length}枚 · ${formatVideoTime(times[i],'.')} を読み取り中`;
         const result=await abortable(review.worker.recognize(frame.canvas),signal);
         if(signal.aborted)throw abortError();
-        const text=result.data.text.replace(/\r/g,'').trim();
+        const raw=result.data.text.replace(/\r/g,'').trim();
+        const text=normalizeOcrText(raw);
         const nextEnd=Math.min(end,times[i]+Number(v$('video-interval').value));
         if(text){
           if(!manual&&last&&normalizedCaption(last.raw)===normalizedCaption(text))last.end=nextEnd;
           else {
             const duplicate=manual?review.rows.find(r=>Math.abs(r.time-times[i])<.05):null;
-            const row={id:duplicate?.id||crypto.randomUUID(),time:times[i],end:Math.max(times[i]+.001,nextEnd),raw:text,text,confidence:Number(result.data.confidence)||0,image:frame.image,ignored:[]};
+            const row={id:duplicate?.id||crypto.randomUUID(),time:times[i],end:Math.max(times[i]+.001,nextEnd),raw,text,confidence:Number(result.data.confidence)||0,image:frame.image,ignored:[],confirmed:false};
             if(duplicate)review.rows.splice(review.rows.indexOf(duplicate),1,row);else review.rows.push(row);
             review.rows.sort((a,b)=>a.time-b.time);
             last=row;
@@ -157,6 +185,37 @@ export function initVideoReview({ getDictionary, onTextExport, notify }) {
     }finally{clearTimeout(initialTimeout);if(review.worker){await review.worker.terminate();review.worker=null;}review.busy=false;review.abort=null;updateButtons();}
   }
   for(const id of ['video-choose','video-change'])v$(id).addEventListener('click',()=>v$('video-file').click());
+  v$('video-select-region').addEventListener('click',()=>setSelectionMode(!review.selecting));
+  const pointInVideo=event=>{
+    const rect=v$('video-drop').getBoundingClientRect();
+    return {x:Math.max(0,Math.min(100,(event.clientX-rect.left)/rect.width*100)),y:Math.max(0,Math.min(100,(event.clientY-rect.top)/rect.height*100))};
+  };
+  function drawSelectedRegion(event) {
+    if(!review.selection)return;
+    const point=pointInVideo(event),start=review.selection.start;
+    const rect={x:Math.min(start.x,point.x),y:Math.min(start.y,point.y),w:Math.abs(point.x-start.x),h:Math.abs(point.y-start.y)};
+    for(const key of ['x','y','w','h'])v$(`video-crop-${key}`).value=rect[key].toFixed(1);
+    v$('video-crop-preset').value='custom';updateCrop();
+  }
+  v$('video-drop').addEventListener('pointerdown',event=>{
+    if(!review.selecting||event.button!==0)return;
+    event.preventDefault();review.selection={start:pointInVideo(event),previous:crop()};
+    v$('video-drop').setPointerCapture(event.pointerId);
+  });
+  v$('video-drop').addEventListener('pointermove',event=>{if(review.selecting&&review.selection)drawSelectedRegion(event);});
+  v$('video-drop').addEventListener('pointerup',event=>{
+    if(!review.selecting||!review.selection)return;
+    drawSelectedRegion(event);const rect=crop(),previous=review.selection.previous;
+    if(rect.w<2||rect.h<2){for(const key of ['x','y','w','h'])v$(`video-crop-${key}`).value=previous[key];updateCrop();message('小さすぎる範囲です。テロップの文字全体を囲んでください。',true);review.selection=null;return;}
+    setSelectionMode(false);message('読み取り範囲を指定しました。下の範囲プレビューで文字が切れていないか確認し、まず「この画面を読む」を試してください。');
+  });
+  function cancelSelection() {
+    if(review.selection){for(const key of ['x','y','w','h'])v$(`video-crop-${key}`).value=review.selection.previous[key];updateCrop();}
+    setSelectionMode(false);
+  }
+  v$('video-drop').addEventListener('pointercancel',()=>{if(review.selecting)cancelSelection();});
+  window.addEventListener('keydown',event=>{if(event.key==='Escape'&&review.selecting)cancelSelection();});
+  for(const event of ['seeked','loadeddata','timeupdate'])video.addEventListener(event,updateCropPreview);
   v$('video-demo').addEventListener('click',async()=>{
     if(review.busy)return;
     try {
@@ -184,24 +243,27 @@ export function initVideoReview({ getDictionary, onTextExport, notify }) {
   v$('video-captions').addEventListener('change',event=>{
     const id=event.target.dataset.captionEdit;if(!id||review.busy)return;
     const row=review.rows.find(r=>r.id===id);if(!row)return;
-    row.text=event.target.value;row.ignored=[];renderReview();
+    row.text=event.target.value;row.ignored=[];row.confirmed=false;renderReview();
   });
   v$('video-captions').addEventListener('click',async event=>{
     const b=event.target.closest('button');if(!b)return;
-    const id=b.dataset.videoJump||b.dataset.videoApply||b.dataset.videoIgnore;
+    const id=b.dataset.videoJump||b.dataset.videoApply||b.dataset.videoIgnore||b.dataset.videoConfirm;
     const row=review.rows.find(r=>r.id===id);if(!row)return;
     if(b.dataset.videoJump){if(review.busy)return notify('読み取りを停止してから、動画の位置を変更してください。');try{video.pause();await seekTo(row.time);v$('video-drop').scrollIntoView({behavior:'smooth',block:'center'});}catch(e){message(e.message,true);}return;}
     if(review.busy)return;
+    if(b.dataset.videoConfirm){row.confirmed=!row.confirmed;renderReview();return;}
     const issue=findings(row).find(f=>f.id===b.dataset.issueId);if(!issue)return;
-    if(b.dataset.videoApply)row.text=applyFindings(row.text,[issue]);else row.ignored.push(issue.id);
+    if(b.dataset.videoApply){row.text=applyFindings(row.text,[issue]);row.confirmed=false;}else row.ignored.push(issue.id);
     renderReview();
   });
   v$('video-report').addEventListener('click',()=>{
-    const link=document.createElement('a');const url=URL.createObjectURL(new Blob([videoReportCsv(review.rows,findings)],{type:'text/csv;charset=utf-8'}));
+    const exportRows=selectExportRows();if(!exportRows)return;
+    const link=document.createElement('a');const url=URL.createObjectURL(new Blob([videoReportCsv(exportRows,findings)],{type:'text/csv;charset=utf-8'}));
     link.href=url;link.download=`${review.file.name.replace(/\.[^.]+$/,'')}_telop-review.csv`;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
   });
   v$('video-to-editor').addEventListener('click',()=>{
-    const srt=captionsToSrt(review.rows);
+    const exportRows=selectExportRows();if(!exportRows)return;
+    const srt=captionsToSrt(exportRows);
     if(srt.length>50000)return notify('50,000文字を超えるため、確認レポートCSVで書き出してください。');
     onTextExport(srt,`${review.file.name.replace(/\.[^.]+$/,'')}_ocr.srt`);
   });

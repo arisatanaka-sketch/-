@@ -2,7 +2,7 @@ function decodeOcrBase64(value) {
   return Uint8Array.from(atob(value), c => c.charCodeAt(0));
 }
 
-export async function createLocalOcrWorker(logger) {
+export async function createLocalOcrWorker(logger, {languages='jpn', pageMode='6'} = {}) {
   const packed = document.getElementById('ocr-packed-assets');
   const urls = [];
   let workerPath, corePath, langPath;
@@ -35,11 +35,11 @@ export async function createLocalOcrWorker(logger) {
     langPath = base.href.replace(/\/$/,'');
   }
   try {
-    const worker = await window.Tesseract.createWorker('jpn+eng',1,{
+    const worker = await window.Tesseract.createWorker(languages,1,{
       workerPath,corePath,langPath,workerBlobURL:!packed,cacheMethod:'none',logger,
       errorHandler: () => {},
     });
-    await worker.setParameters({tessedit_pageseg_mode:'6',preserve_interword_spaces:'1'});
+    await worker.setParameters({tessedit_pageseg_mode:pageMode,preserve_interword_spaces:'0'});
     return worker;
   } finally { for (const url of urls) URL.revokeObjectURL(url); }
 }

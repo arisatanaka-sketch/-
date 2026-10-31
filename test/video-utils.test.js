@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {formatVideoTime,buildSampleTimes,videoCropRect,captionsToSrt,videoReportCsv} from '../public/video-utils.js';
+import {formatVideoTime,buildSampleTimes,videoCropRect,captionsToSrt,videoReportCsv,assessCaption,normalizeOcrText} from '../public/video-utils.js';
 
 test('samples selected range without seeking past the end or accepting excessive work',()=>{
   assert.deepEqual(buildSampleTimes(2,4.2,1),[2,3,4]);
@@ -30,4 +30,18 @@ test('spreadsheet formulas in OCR and edited text are escaped in CSV',()=>{
   const csv=videoReportCsv([{time:0,end:1,raw:'=1+2',text:'@SUM(1)',confidence:90}],()=>[]);
   assert.ok(csv.includes('"\'=1+2"'));
   assert.ok(csv.includes('"\'@SUM(1)"'));
+});
+test('flags uncertain OCR and mixed letter noise without guessing corrected text',()=>{
+  assert.equal(assessCaption({text:'央皇帆(秋)\nこの馬\n絶対に\nBEhELTH',confidence:59}).needsReview,true);
+  assert.equal(assessCaption({text:'絶対に\nHR@EWNT\nぐださい !',confidence:80}).needsReview,true);
+  assert.equal(assessCaption({text:'G1 天皇賞（秋）',confidence:90}).needsReview,false);
+  assert.equal(assessCaption({text:'複勝で勝負',confidence:91}).needsReview,false);
+});
+test('reports explicit review status rather than labeling raw OCR as corrected',()=>{
+  const row={time:0,end:1,raw:'央皇帆',text:'央皇帆',confidence:59};
+  assert.match(videoReportCsv([row],()=>[]),/未確認/);
+  assert.match(videoReportCsv([{...row,text:'天皇賞',confirmed:true}],()=>[]),/画像と照合済み/);
+});
+test('joins OCR spacing only between Japanese characters and preserves English and lines',()=>{
+  assert.equal(normalizeOcrText('復 勝 で 勝負\nDeep Impact / 武 豊'),'復勝で勝負\nDeep Impact / 武豊');
 });
