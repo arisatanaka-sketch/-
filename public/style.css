@@ -604,6 +604,11 @@ dialog p { color: #647e51; font-size: 12px; line-height: 1.9; }
 .video-demo-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 0 20px 16px; }
 .video-demo-row>span { color: #758a64; font-size: 10px; line-height: 1.8; }
 .video-demo-row>.secondary-button { font-size: 11px; padding: 9px 12px; min-height: 36px; }
+.video-quick-preset { margin: 0 20px 18px; padding: 16px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 13px; background: #eef5e4; border: 1px solid #d5e4c5; border-radius: 8px; }
+.video-quick-preset strong { color: #42652f; font-size: 12px; }
+.video-quick-preset p { color: #6f885b; font-size: 11px; line-height: 1.8; margin-top: 6px; }
+.video-quick-preset button { font-size: 11px; padding: 10px 12px; }
+@media(max-width:480px){.video-quick-preset{margin:0 17px 17px}.video-quick-preset button{width:100%;min-height:44px}}
 .video-stage.selecting { cursor: crosshair; touch-action: none; user-select: none; outline: 2px solid #97c65b; outline-offset: 2px; }
 .video-stage.selecting video { pointer-events: none; }
 .video-crop-preview { margin: 0 20px 19px; padding: 14px; border: 1px solid #dce7d1; background: #f3f7ed; border-radius: 7px; }

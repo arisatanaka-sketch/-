@@ -1,6 +1,6 @@
 import { checkText, applyFindings } from './checker.js';
 import { createLocalOcrWorker } from './ocr-engine.js';
-import { formatVideoTime, buildSampleTimes, videoCropRect, normalizedCaption, captionsToSrt, videoReportCsv, assessCaption, normalizeOcrText } from './video-utils.js';
+import { formatVideoTime, buildSampleTimes, videoCropRect, normalizedCaption, captionsToSrt, videoReportCsv, assessCaption, normalizeOcrText, upperTitleCrop } from './video-utils.js';
 import { loadBrowserVideo } from './media-loader.js';
 import { prepareTelopCanvas } from './ocr-image.js';
 
@@ -19,6 +19,7 @@ export function initVideoReview({ getDictionary, onTextExport, notify }) {
     document.querySelectorAll('[data-caption-edit], [data-video-apply], [data-video-ignore], [data-video-confirm]').forEach(el => el.disabled = review.busy);
     v$('video-scan').disabled = v$('video-current').disabled = !review.ready || review.busy;
     v$('video-select-region').disabled = !review.ready || review.busy;
+    v$('video-quick-title').disabled = !review.ready || review.busy;
     v$('video-stop').hidden = !review.busy;
     v$('video-report').disabled = v$('video-to-editor').disabled = !review.rows.length || review.busy;
     video.controls = !review.busy && !review.selecting;
@@ -190,6 +191,18 @@ export function initVideoReview({ getDictionary, onTextExport, notify }) {
     }finally{clearTimeout(initialTimeout);if(review.worker){await review.worker.terminate();review.worker=null;}review.busy=false;review.abort=null;updateButtons();}
   }
   for(const id of ['video-choose','video-change'])v$(id).addEventListener('click',()=>v$('video-file').click());
+  v$('video-quick-title').addEventListener('click',async()=>{
+    if(!review.ready||review.busy)return;
+    setSelectionMode(false);
+    const titleRegion=upperTitleCrop();
+    for(const key of ['x','y','w','h'])v$(`video-crop-${key}`).value=titleRegion[key];
+    v$('video-crop-preset').value='custom';v$('video-ocr-language').value='jpn';v$('video-ocr-layout').value='8';v$('video-ocr-color').value='gold';
+    updateCrop();const time=video.currentTime;
+    await scanVideo(true);
+    const regionKey=JSON.stringify(titleRegion);
+    const row=review.rows.find(r=>Math.abs(r.time-time)<.05&&r.regionKey===regionKey);
+    if(row){const card=document.querySelector(`[data-caption="${row.id}"]`);card?.scrollIntoView({behavior:'smooth',block:'center'});}
+  });
   v$('video-select-region').addEventListener('click',()=>setSelectionMode(!review.selecting));
   const pointInVideo=event=>{
     const rect=v$('video-drop').getBoundingClientRect();

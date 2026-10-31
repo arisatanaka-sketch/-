@@ -15,6 +15,7 @@ export function videoCropRect(width, height, crop) {
   const y = Math.round(height * Math.max(0,Math.min(99,crop.y))/100);
   return {x,y,width:Math.max(1,Math.min(width-x,Math.round(width*crop.w/100))),height:Math.max(1,Math.min(height-y,Math.round(height*crop.h/100)))};
 }
+export function upperTitleCrop() { return {x:0,y:0,w:100,h:25}; }
 export function normalizedCaption(text) { return text.replace(/\s+/g,'').trim(); }
 export function normalizeOcrText(text) {
   // Keep the raw OCR separately. Only join spacing inserted between Japanese
