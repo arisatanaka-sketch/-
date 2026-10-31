@@ -611,6 +611,9 @@ dialog p { color: #647e51; font-size: 12px; line-height: 1.9; }
 .video-crop-preview strong { font-size: 12px; color: #4d7337; }
 .video-crop-preview span { color: #6f875c; font-size: 11px; line-height: 1.8; }
 .video-crop-preview canvas { display: block; width: 100%; max-height: 190px; object-fit: contain; background: #12271d; border-radius: 4px; }
+.video-crop-preview>.video-crop-canvases { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 12px; }
+.video-crop-canvases figure { margin: 0; min-width: 0; }
+.video-crop-canvases figcaption { color: #6a8357; font-size: 10px; margin-bottom: 7px; }
 .video-export-scope { display: flex; flex-direction: column; gap: 5px; color: #688356; font-size: 10px; }
 .video-export-scope select { max-width: 210px; border: 1px solid #d0dfc3; color: #486d33; border-radius: 5px; padding: 8px; font-size: 11px; background: #f8fcf2; }
 .video-review-actions { align-items: flex-end; flex-wrap: wrap; }

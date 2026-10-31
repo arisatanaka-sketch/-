@@ -7,7 +7,7 @@ const read = name => readFile(path.join(root, 'public', name), 'utf8');
 const [template, css, favicon] = await Promise.all(['index.html', 'style.css', 'favicon.svg'].map(read));
 // The downloadable version makes no font/asset requests and needs no server.
 const styles = css.replace(/^@import\s+url\([^\n]+\);\s*/m, '');
-const modules = await Promise.all(['checker.js','video-utils.js','media-loader.js','ocr-engine.js','video.js','app.js'].map(read));
+const modules = await Promise.all(['checker.js','video-utils.js','media-loader.js','ocr-image.js','ocr-engine.js','video.js','app.js'].map(read));
 const logic = modules.map(source => source.replace(/^import [^\n]*\n/gm,'').replace(/^export /gm,'')).join('\n');
 // Compile without executing so a broken browser bundle cannot be published.
 new Function(logic);

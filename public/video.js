@@ -2,6 +2,7 @@ import { checkText, applyFindings } from './checker.js';
 import { createLocalOcrWorker } from './ocr-engine.js';
 import { formatVideoTime, buildSampleTimes, videoCropRect, normalizedCaption, captionsToSrt, videoReportCsv, assessCaption, normalizeOcrText } from './video-utils.js';
 import { loadBrowserVideo } from './media-loader.js';
+import { prepareTelopCanvas } from './ocr-image.js';
 
 export function initVideoReview({ getDictionary, onTextExport, notify }) {
   const v$ = id => document.getElementById(id);
@@ -12,7 +13,7 @@ export function initVideoReview({ getDictionary, onTextExport, notify }) {
   const message = (text, error = false) => {v$('video-message').textContent=text;v$('video-message').classList.toggle('error',error);};
   const crop = () => ({ x:Number(v$('video-crop-x').value),y:Number(v$('video-crop-y').value),w:Number(v$('video-crop-w').value),h:Number(v$('video-crop-h').value) });
   const findings = row => checkText(row.text, {custom:getDictionary(),ignored:row.ignored});
-  const fields = ['video-crop-preset','video-crop-x','video-crop-y','video-crop-w','video-crop-h','video-start','video-end','video-interval','video-file','video-change','video-choose','video-demo','video-ocr-language','video-ocr-layout','video-export-scope'];
+  const fields = ['video-crop-preset','video-crop-x','video-crop-y','video-crop-w','video-crop-h','video-start','video-end','video-interval','video-file','video-change','video-choose','video-demo','video-ocr-language','video-ocr-layout','video-ocr-color','video-export-scope'];
   function updateButtons() {
     for (const id of fields) v$(id).disabled = review.busy;
     document.querySelectorAll('[data-caption-edit], [data-video-apply], [data-video-ignore], [data-video-confirm]').forEach(el => el.disabled = review.busy);
@@ -48,6 +49,9 @@ export function initVideoReview({ getDictionary, onTextExport, notify }) {
     const canvas=v$('video-crop-canvas');
     canvas.width=Math.min(640,rect.width);canvas.height=Math.max(1,Math.round(rect.height*canvas.width/rect.width));
     canvas.getContext('2d').drawImage(video,rect.x,rect.y,rect.width,rect.height,0,0,canvas.width,canvas.height);
+    const processed=prepareTelopCanvas(canvas,v$('video-ocr-color').value);
+    const preview=v$('video-processed-canvas');preview.width=processed.width;preview.height=processed.height;
+    preview.getContext('2d').drawImage(processed,0,0);
   }
   function setSelectionMode(active) {
     review.selecting=active;review.selection=null;
@@ -87,14 +91,14 @@ export function initVideoReview({ getDictionary, onTextExport, notify }) {
   function capture() {
     const rect = videoCropRect(video.videoWidth,video.videoHeight,crop());
     const canvas=document.createElement('canvas');
-    const scale=Math.min(2,1920/rect.width);
+    const scale=Math.min(3,1920/rect.width);
     canvas.width=Math.max(1,Math.round(rect.width*scale));canvas.height=Math.max(1,Math.round(rect.height*scale));
     const ctx=canvas.getContext('2d');
     ctx.fillStyle='#fff';ctx.fillRect(0,0,canvas.width,canvas.height);
     ctx.drawImage(video,rect.x,rect.y,rect.width,rect.height,0,0,canvas.width,canvas.height);
     const thumbnail=document.createElement('canvas');thumbnail.width=Math.min(360,canvas.width);thumbnail.height=Math.max(1,Math.round(canvas.height*thumbnail.width/canvas.width));
     thumbnail.getContext('2d').drawImage(canvas,0,0,thumbnail.width,thumbnail.height);
-    return {canvas,image:thumbnail.toDataURL('image/jpeg',.8)};
+    return {canvas:prepareTelopCanvas(canvas,v$('video-ocr-color').value),image:thumbnail.toDataURL('image/jpeg',.8)};
   }
   function renderReview() {
     let issueCount=0;
@@ -166,8 +170,9 @@ export function initVideoReview({ getDictionary, onTextExport, notify }) {
         if(text){
           if(!manual&&last&&normalizedCaption(last.raw)===normalizedCaption(text))last.end=nextEnd;
           else {
-            const duplicate=manual?review.rows.find(r=>Math.abs(r.time-times[i])<.05):null;
-            const row={id:duplicate?.id||crypto.randomUUID(),time:times[i],end:Math.max(times[i]+.001,nextEnd),raw,text,confidence:Number(result.data.confidence)||0,image:frame.image,ignored:[],confirmed:false};
+            const regionKey=JSON.stringify(crop());
+            const duplicate=manual?review.rows.find(r=>Math.abs(r.time-times[i])<.05&&r.regionKey===regionKey):null;
+            const row={id:duplicate?.id||crypto.randomUUID(),time:times[i],end:Math.max(times[i]+.001,nextEnd),raw,text,confidence:Number(result.data.confidence)||0,image:frame.image,ignored:[],confirmed:false,regionKey};
             if(duplicate)review.rows.splice(review.rows.indexOf(duplicate),1,row);else review.rows.push(row);
             review.rows.sort((a,b)=>a.time-b.time);
             last=row;
@@ -236,6 +241,7 @@ export function initVideoReview({ getDictionary, onTextExport, notify }) {
     v$('video-crop-x').value=0;v$('video-crop-y').value=y;v$('video-crop-w').value=100;v$('video-crop-h').value=100-y;updateCrop();
   });
   for(const key of ['x','y','w','h'])v$(`video-crop-${key}`).addEventListener('input',()=>{v$('video-crop-preset').value='custom';updateCrop();});
+  v$('video-ocr-color').addEventListener('change',updateCropPreview);
   for(const id of ['video-start','video-end','video-interval'])v$(id).addEventListener('input',updateEstimate);
   v$('video-scan').addEventListener('click',()=>scanVideo(false));v$('video-current').addEventListener('click',()=>scanVideo(true));
   v$('video-stop').addEventListener('click',()=>{review.abort?.abort();review.worker?.terminate();review.worker=null;});
